@@ -1,6 +1,7 @@
 import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
+  Ban,
   Boxes,
   Camera,
   ClipboardList,
@@ -9,6 +10,7 @@ import {
   PackagePlus,
   Printer,
   ReceiptText,
+  RotateCcw,
   Save,
   Search,
   Settings,
@@ -178,7 +180,15 @@ function App() {
 
         {page === "dashboard" && <Dashboard data={data} />}
         {page === "billing" && <Billing data={data} profile={profile} refresh={refresh} showNotice={showNotice} />}
-        {page === "products" && <Products products={data.products} showNotice={showNotice} saveProduct={async (product) => { await repository.saveProduct(product); await refresh(); showNotice("Product master saved.", "success"); }} />}
+        {page === "products" && (
+          <Products
+            profile={profile}
+            products={data.products}
+            showNotice={showNotice}
+            saveProduct={async (product) => { await repository.saveProduct(product); await refresh(); }}
+            addStockMovement={async (movement) => { await repository.addStockMovement(movement); await refresh(); }}
+          />
+        )}
         {page === "stock" && <Stock data={data} profile={profile} refresh={refresh} showNotice={showNotice} />}
         {page === "invoices" && <Invoices invoices={data.invoices} settings={data.settings} />}
         {page === "reports" && <Reports data={data} />}
@@ -253,10 +263,11 @@ function Login({ onLogin }: { onLogin: (profile: Profile) => void }) {
 
 function Dashboard({ data }: { data: AppData }) {
   const stock = stockByProduct(data.products, data.movements);
+  const activeProducts = data.products.filter((product) => product.active);
   const today = new Date().toDateString();
   const todaysInvoices = data.invoices.filter((invoice) => new Date(invoice.createdAt).toDateString() === today);
-  const lowStock = data.products.filter((product) => (stock[product.id] ?? 0) <= product.reorderLevel);
-  const stockValue = data.products.reduce((sum, product) => sum + (stock[product.id] ?? 0) * product.sellingPrice, 0);
+  const lowStock = activeProducts.filter((product) => (stock[product.id] ?? 0) <= product.reorderLevel);
+  const stockValue = activeProducts.reduce((sum, product) => sum + (stock[product.id] ?? 0) * product.sellingPrice, 0);
 
   return (
     <section className="page-grid">
@@ -295,12 +306,24 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Products({ products, saveProduct, showNotice }: { products: Product[]; saveProduct: (product: Product) => Promise<void>; showNotice: (message: string, tone: Notice["tone"]) => void }) {
+function Products({
+  profile,
+  products,
+  saveProduct,
+  addStockMovement,
+  showNotice
+}: {
+  profile: Profile;
+  products: Product[];
+  saveProduct: (product: Product) => Promise<void>;
+  addStockMovement: (movement: StockMovement) => Promise<void>;
+  showNotice: (message: string, tone: Notice["tone"]) => void;
+}) {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Product | null>(null);
   const [barcodeValue, setBarcodeValue] = useState("");
   const [scannerOpen, setScannerOpen] = useState(false);
-  const filtered = products.filter((product) => `${product.name} ${product.barcode} ${product.sku}`.toLowerCase().includes(query.toLowerCase()));
+  const filtered = products.filter((product) => `${product.name} ${product.barcode} ${product.sku} ${product.active ? "active" : "inactive"}`.toLowerCase().includes(query.toLowerCase()));
 
   useEffect(() => {
     setBarcodeValue(editing?.barcode ?? "");
@@ -311,13 +334,18 @@ function Products({ products, saveProduct, showNotice }: { products: Product[]; 
     const form = new FormData(event.currentTarget);
     const barcode = barcodeValue.trim();
     const sku = String(form.get("sku") || "").trim();
+    const active = form.get("active") === "on";
+    const openingStock = inputNumber(form.get("openingStock"));
     const duplicateBarcode = products.find((product) => product.barcode === barcode && product.id !== editing?.id);
     const duplicateSku = products.find((product) => product.sku === sku && product.id !== editing?.id);
     if (duplicateBarcode) return showNotice(`Barcode already exists for ${duplicateBarcode.name}.`, "error");
     if (duplicateSku) return showNotice(`SKU already exists for ${duplicateSku.name}.`, "error");
+    if (!editing && openingStock < 0) return showNotice("Opening stock cannot be negative.", "error");
+    if (!editing && openingStock > 0 && !active) return showNotice("Opening stock can be added only for an active product.", "error");
 
-    await saveProduct({
-      id: editing?.id ?? newId(),
+    const productId = editing?.id ?? newId();
+    const product: Product = {
+      id: productId,
       barcode,
       sku,
       name: String(form.get("name") || "").trim(),
@@ -328,12 +356,39 @@ function Products({ products, saveProduct, showNotice }: { products: Product[]; 
       mrp: inputNumber(form.get("mrp")),
       sellingPrice: inputNumber(form.get("sellingPrice")),
       reorderLevel: inputNumber(form.get("reorderLevel")),
-      active: form.get("active") === "on",
+      active,
       createdAt: editing?.createdAt ?? new Date().toISOString()
-    });
+    };
+
+    await saveProduct(product);
+    if (!editing && openingStock > 0) {
+      await addStockMovement({
+        id: newId(),
+        productId,
+        type: "inward",
+        quantity: openingStock,
+        reference: "OPENING",
+        notes: "Opening stock from product creation",
+        createdAt: new Date().toISOString(),
+        createdBy: profile.id
+      });
+    }
+    showNotice(openingStock > 0 && !editing ? "Product master and opening stock saved." : "Product master saved.", "success");
     setEditing(null);
     setBarcodeValue("");
     event.currentTarget.reset();
+  };
+
+  const toggleProductActive = async (product: Product) => {
+    const nextProduct = { ...product, active: !product.active };
+    await saveProduct(nextProduct);
+    if (editing?.id === product.id) setEditing(nextProduct);
+    showNotice(
+      nextProduct.active
+        ? `${product.name} reactivated for billing and stock entry.`
+        : `${product.name} marked inactive. Stock and invoice history remain linked.`,
+      "success"
+    );
   };
 
   return (
@@ -348,7 +403,15 @@ function Products({ products, saveProduct, showNotice }: { products: Product[]; 
         <label className="field"><span>Product name</span><input name="name" required defaultValue={editing?.name} /></label>
         <label className="field"><span>Category</span><input name="category" defaultValue={editing?.category ?? "General"} /></label>
         <label className="field"><span>HSN code</span><input name="hsn" defaultValue={editing?.hsn} /></label>
-        <label className="field"><span>Unit</span><input name="unit" defaultValue={editing?.unit ?? "pcs"} /></label>
+        <label className="field"><span>Unit of measure</span><input name="unit" defaultValue={editing?.unit ?? "pcs"} placeholder="pcs, kg, box" /></label>
+        {!editing ? (
+          <label className="field">
+            <span>Opening stock quantity</span>
+            <input name="openingStock" type="number" step="0.001" min="0" defaultValue={0} />
+          </label>
+        ) : (
+          <p className="field-hint">Use the Stock page for inward, cancellation, or counted-stock adjustments after product creation.</p>
+        )}
         <label className="field"><span>GST rate (%)</span><input name="gstRate" type="number" step="0.01" defaultValue={editing?.gstRate ?? 5} /></label>
         <label className="field"><span>MRP</span><input name="mrp" type="number" step="0.01" defaultValue={editing?.mrp ?? 0} /></label>
         <label className="field"><span>Selling price</span><input name="sellingPrice" type="number" step="0.01" defaultValue={editing?.sellingPrice ?? 0} /></label>
@@ -368,7 +431,7 @@ function Products({ products, saveProduct, showNotice }: { products: Product[]; 
         </div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Barcode</th><th>GST</th><th>Price</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Barcode</th><th>GST</th><th>Price</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {filtered.map((product) => (
                 <tr key={product.id}>
@@ -376,9 +439,19 @@ function Products({ products, saveProduct, showNotice }: { products: Product[]; 
                   <td>{product.barcode}</td>
                   <td>{product.gstRate}%</td>
                   <td>{formatCurrency(product.sellingPrice)}</td>
-                  <td><button className="small-button" onClick={() => setEditing(product)}>Edit</button></td>
+                  <td><span className={product.active ? "status ok" : "status off"}>{product.active ? "Active" : "Inactive"}</span></td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="small-button" onClick={() => setEditing(product)}>Edit</button>
+                      <button className={product.active ? "small-button danger-button" : "small-button"} onClick={() => toggleProductActive(product)}>
+                        {product.active ? <Ban size={15} /> : <RotateCcw size={15} />}
+                        {product.active ? "Deactivate" : "Reactivate"}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
+              {!filtered.length ? <tr><td colSpan={6}>No products match the current search.</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -389,6 +462,7 @@ function Products({ products, saveProduct, showNotice }: { products: Product[]; 
 
 function Stock({ data, profile, refresh, showNotice }: { data: AppData; profile: Profile; refresh: () => Promise<void>; showNotice: (message: string, tone: Notice["tone"]) => void }) {
   const stock = stockByProduct(data.products, data.movements);
+  const activeProducts = data.products.filter((product) => product.active);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [stockBarcode, setStockBarcode] = useState("");
   const [movementType, setMovementType] = useState<StockMovementType>("inward");
@@ -423,6 +497,8 @@ function Stock({ data, profile, refresh, showNotice }: { data: AppData; profile:
     const form = new FormData(event.currentTarget);
     const quantity = inputNumber(form.get("quantity"));
     if (!selectedProductId) return showNotice("Select a product or scan its barcode before saving stock.", "error");
+    if (!selectedProduct) return showNotice("Selected product was not found. Refresh and try again.", "error");
+    if (!selectedProduct.active) return showNotice("This product is inactive. Reactivate it before adding stock movements.", "error");
     if (quantity < 0) return showNotice("Quantity cannot be negative.", "error");
 
     let movementQuantity = quantity;
@@ -463,8 +539,9 @@ function Stock({ data, profile, refresh, showNotice }: { data: AppData; profile:
         </div>
         <label className="field"><span>Product</span><select name="productId" required value={selectedProductId} onChange={(event) => setSelectedProductId(event.target.value)}>
           <option value="">Select product</option>
-          {data.products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+          {activeProducts.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
         </select></label>
+        {!activeProducts.length ? <p className="inline-error">No active products are available for stock entry.</p> : null}
         {selectedProduct ? <p className="selected-product">Current stock: <strong>{selectedCurrentStock}</strong> | Barcode: {selectedProduct.barcode}</p> : null}
         <label className="field"><span>Movement type</span><select name="type" value={movementType} onChange={(event) => setMovementType(event.target.value as StockMovementType)}>
           <option value="inward">Inward</option>
@@ -494,14 +571,21 @@ function Stock({ data, profile, refresh, showNotice }: { data: AppData; profile:
           <table>
             <thead><tr><th>Product</th><th>Current</th><th>Reorder</th><th>Status</th></tr></thead>
             <tbody>
-              {data.products.map((product) => (
-                <tr key={product.id}>
-                  <td>{product.name}</td>
-                  <td>{stock[product.id] ?? 0}</td>
-                  <td>{product.reorderLevel}</td>
-                  <td><span className={(stock[product.id] ?? 0) <= product.reorderLevel ? "status warn" : "status ok"}>{(stock[product.id] ?? 0) <= product.reorderLevel ? "Low" : "OK"}</span></td>
-                </tr>
-              ))}
+              {data.products.map((product) => {
+                const currentStock = stock[product.id] ?? 0;
+                return (
+                  <tr key={product.id}>
+                    <td><strong>{product.name}</strong>{!product.active ? <span className="muted block">Inactive product</span> : null}</td>
+                    <td>{currentStock}</td>
+                    <td>{product.reorderLevel}</td>
+                    <td>
+                      <span className={!product.active ? "status off" : currentStock <= product.reorderLevel ? "status warn" : "status ok"}>
+                        {!product.active ? "Inactive" : currentStock <= product.reorderLevel ? "Low" : "OK"}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

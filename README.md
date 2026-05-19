@@ -50,7 +50,9 @@ The app is built with React, TypeScript, Vite, and Supabase. It also has a local
 │   └── styles.css
 ├── supabase
 │   └── migrations
-│       └── 001_initial_schema.sql      # Supabase schema, RLS, invoice RPC
+│       ├── 001_initial_schema.sql      # Supabase schema, RLS, invoice RPC
+│       ├── 002_rbac_hardening.sql      # Stricter invoice/profile policies
+│       └── 003_inactive_product_stock_guard.sql # Blocks stock entries for inactive products
 ├── .env.example
 ├── package.json
 └── vite.config.ts
@@ -120,7 +122,9 @@ Use this flow when presenting Billsy locally.
    - Current stock value.
 4. Open `Products`:
    - Point out barcode, SKU, HSN, GST rate, MRP, selling price, reorder level, and active status.
-   - Add or edit a product if needed.
+   - Add a product with `Unit of measure` such as `pcs`, `kg`, or `box`.
+   - Set `Opening stock quantity` to the starting available stock. This creates the first stock inward entry automatically.
+   - Edit a product if needed. After creation, use the `Stock` page for all quantity changes.
 5. Open `Stock`:
    - Add an inward movement for any product.
    - Show the stock-on-hand table and low stock status.
@@ -231,10 +235,12 @@ Demo mode uses browser local storage. For real cloud data, configure Supabase.
 
 1. Create a Supabase project.
 2. Open the Supabase SQL editor.
-3. Run the migration:
+3. Run the migrations in order:
 
    ```text
    supabase/migrations/001_initial_schema.sql
+   supabase/migrations/002_rbac_hardening.sql
+   supabase/migrations/003_inactive_product_stock_guard.sql
    ```
 
 4. Create users in Supabase Auth.
@@ -339,6 +345,12 @@ Check:
 - The product is active.
 - The barcode field has focus for hardware scanners.
 - In demo mode, use one of the seeded demo barcodes.
+
+### New product stock is zero
+
+`Unit of measure` is not stock quantity. It should contain values like `pcs`, `kg`, `box`, or `bottle`.
+
+When creating a product, enter the starting quantity in `Opening stock quantity`. After product creation, update quantity from the `Stock` page using `Inward`, `Adjustment`, or `Cancellation`.
 
 ### Bill cannot be saved
 

@@ -282,6 +282,12 @@ h2 {
   color: var(--danger);
 }
 
+.danger-button {
+  color: var(--danger);
+  border-color: #fecdca;
+  background: #fef3f2;
+}
+
 .toast {
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 14px);
@@ -502,6 +508,18 @@ h2 {
   color: var(--warn);
   background: #fffaeb;
 }
+
+.status.off {
+  color: #475467;
+  background: #f2f4f7;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 
 .billing-layout {
   display: grid;
