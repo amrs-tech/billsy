@@ -76,6 +76,8 @@ const stockByProduct = (products: Product[], movements: StockMovement[]) =>
   Object.fromEntries(products.map((product) => [product.id, calculateCurrentStock(product.id, movements)]));
 
 const inputNumber = (value: FormDataEntryValue | null) => Number(value || 0);
+const formatQuantity = (value: number) => (Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/\.?0+$/, ""));
+const invoiceTotalQuantity = (invoice: Invoice) => invoice.items.reduce((sum, item) => sum + item.quantity, 0);
 
 function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -775,6 +777,7 @@ function Invoices({ invoices, settings }: { invoices: Invoice[]; settings: AppSe
         invoice.paymentMode,
         invoice.status,
         String(invoice.totals.grandTotal),
+        String(invoiceTotalQuantity(invoice)),
         new Date(invoice.createdAt).toLocaleDateString(),
         ...invoice.items.flatMap((item) => [
           item.product.name,
@@ -827,17 +830,25 @@ function Invoices({ invoices, settings }: { invoices: Invoice[]; settings: AppSe
         <table>
           <thead><tr><th>Invoice</th><th>Customer</th><th>Items</th><th>Date</th><th>Total</th><th>Payment</th><th></th></tr></thead>
           <tbody>
-            {filteredInvoices.map((invoice) => (
-              <tr key={invoice.id}>
-                <td>{invoice.invoiceNumber}</td>
-                <td><strong>{invoice.customer.name || "Walk-in"}</strong><span className="muted block">{[invoice.customer.phone, invoice.customer.gstin].filter(Boolean).join(" | ")}</span></td>
-                <td>{invoice.items.length} item{invoice.items.length === 1 ? "" : "s"}<span className="muted block">{invoice.items.map((item) => item.product.name).join(", ")}</span></td>
-                <td>{new Date(invoice.createdAt).toLocaleString()}</td>
-                <td>{formatCurrency(invoice.totals.grandTotal)}</td>
-                <td>{invoice.paymentMode.toUpperCase()}</td>
-                <td><button className="small-button" onClick={() => setSelected(invoice)}><Printer size={16} /> Print</button></td>
-              </tr>
-            ))}
+            {filteredInvoices.map((invoice) => {
+              const totalQuantity = invoiceTotalQuantity(invoice);
+              return (
+                <tr key={invoice.id}>
+                  <td>{invoice.invoiceNumber}</td>
+                  <td><strong>{invoice.customer.name || "Walk-in"}</strong><span className="muted block">{[invoice.customer.phone, invoice.customer.gstin].filter(Boolean).join(" | ")}</span></td>
+                  <td>
+                    {formatQuantity(totalQuantity)} qty
+                    <span className="muted block">
+                      {invoice.items.length} line{invoice.items.length === 1 ? "" : "s"} | {invoice.items.map((item) => item.product.name).join(", ")}
+                    </span>
+                  </td>
+                  <td>{new Date(invoice.createdAt).toLocaleString()}</td>
+                  <td>{formatCurrency(invoice.totals.grandTotal)}</td>
+                  <td>{invoice.paymentMode.toUpperCase()}</td>
+                  <td><button className="small-button" onClick={() => setSelected(invoice)}><Printer size={16} /> Print</button></td>
+                </tr>
+              );
+            })}
             {!filteredInvoices.length ? <tr><td colSpan={7}>{invoices.length ? "No bills match the current filters." : "No bills saved yet."}</td></tr> : null}
           </tbody>
         </table>
